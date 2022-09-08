@@ -16,9 +16,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
 import pandas as pd
 import numpy as np
+from datetime import datetime
 
 import matplotlib.pyplot as plt
 import seaborn as sns
+
 sns.set_style("darkgrid")
 
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
@@ -34,23 +36,27 @@ pd.set_option('max_colwidth', 200)
 pd.set_option('expand_frame_repr', False)
 
 
-def get_data():
+def get_data(data_type='heat'):
     dl = DataLoader('mysql')
-    heat_meter = dl.load(host='8.141.169.219', user='root', password='Zrhdb#2019',
-                         port=3307, database='WeiCloudAirDB.V4', sql=Sql.HEATER_METER.value)
     humiture_outdoor = dl.load(host='8.141.169.219', user='root', password='Zrhdb#2019',
                                port=3307, database='WeiCloudAirDB.V4', sql=Sql.HUMITURE_OUTDOOR.value)
     humiture_indoor = dl.load(host='8.141.169.219', user='root', password='Zrhdb#2019',
                               port=3307, database='WeiCloudAirDB.V4', sql=Sql.HUMITURE_INDOOR.value)
+    if data_type == 'heat':
+        label = dl.load(host='8.141.169.219', user='root', password='Zrhdb#2019',
+                             port=3307, database='WeiCloudAirDB.V4', sql=Sql.HEATER_METER.value)
+    else:
+        label = dl.load(host='8.141.169.219', user='root', password='Zrhdb#2019',
+                        port=3307, database='WeiCloudAirDB.V4', sql=Sql.COOLING_TOWER.value)
     # 获取数据
     data_obj = DataPrepare()
     # 预处理，得到特征和标签(可能存在nan值，在model_input中处理)
     x_df = data_obj.build_feature(humiture_outdoor, humiture_indoor)
-    y_df = data_obj.build_label(heat_meter)
+    y_df = data_obj.build_label(label, data_type=data_type)
     return x_df, y_df
 
 
-def train(day_data, hour_data, retrain=False, save_model=True):
+def train(day_data, hour_data=None, retrain=False, save_model=True, model_suffix=''):
     # 日粒度模型训练
     day_df, features_day_df, labels_day_df, features_day_idx = day_data
     print('日粒度可用数据', features_day_df.shape)
@@ -59,7 +65,9 @@ def train(day_data, hour_data, retrain=False, save_model=True):
     # 模型训练
     xgb = XgbModel()
     # 尝试加载已有模型
-    day_model_path = os.path.join('model', 'xgb_model_day.json')
+    if model_suffix != '':
+        model_suffix = f'_{model_suffix}'
+    day_model_path = os.path.join('model', f'xgb_model_day{model_suffix}.json')
     if not retrain:
         xgb.load(load_path=day_model_path)
     if xgb.get_model() is None:
@@ -73,45 +81,54 @@ def train(day_data, hour_data, retrain=False, save_model=True):
     mse_test = np.sqrt(mean_squared_error(y_test_day.values, pred))
     print('日粒度rmse（训练集）:', mse_train)
     print('日粒度rmse（测试集）:', mse_test)
+    # plt.figure(figsize=(15, 10))
+    # plt.plot(y_train_day.values, label='true_train')
+    # plt.plot(pred_train, label='pred_train')
+    # plt.figure(figsize=(15, 10))
+    # plt.plot(y_test_day.values, label='true_test')
+    # plt.plot(pred, label='pred_test')
+    # plt.legend()
+    # plt.show()
 
     # 小时粒度模型训练
-    hour_df, features_hour_df, labels_hour_df, features_hour_idx = hour_data
-    print('小时粒度可用数据', features_hour_df.shape)
-    x_train_hour, x_test_hour, y_train_hour, y_test_hour = train_test_split(
-        features_hour_df, labels_hour_df, test_size=0.1, random_state=666)
-    # 模型训练
-    xgb = XgbModel()
-    # 尝试加载已有模型
-    hour_model_path = os.path.join('model', 'xgb_model_hour.json')
-    if not retrain:
-        xgb.load(load_path=hour_model_path)
-    if xgb.get_model() is None:
-        xgb.fit(x_train_hour.values, y_train_hour.values)
-    if save_model:
-        xgb.save(save_path=hour_model_path)
-    # 计算训练集和测试集的mse
-    pred_hour = xgb.predict(x_test_hour.values)
-    pred_train_hour = xgb.predict(x_train_hour.values)
-    mse_train = np.sqrt(mean_squared_error(y_train_hour.values, pred_train_hour))
-    mse_test = np.sqrt(mean_squared_error(y_test_hour.values, pred_hour))
-    print('小时粒度rmse（训练集）:', mse_train)
-    print('小时粒度rmse（测试集）:', mse_test)
-
-    # 核密度估计+马尔可夫链+蒙特卡洛采样，计算冷量占比，每小时对应一个采样模型
-    hour_group = hour_df.groupby(['hour'])
-    for h, df in hour_group:
-        ratio_arr = df['ratio'].values
-        ratio_arr = ratio_arr[DataFilter.filter_by_3sigma(ratio_arr)]
-        km = KDMSample()
-        sample_model_name = f'kdm_sample_{h}.model'
+    if hour_data is not None:
+        hour_df, features_hour_df, labels_hour_df, features_hour_idx = hour_data
+        print('小时粒度可用数据', features_hour_df.shape)
+        x_train_hour, x_test_hour, y_train_hour, y_test_hour = train_test_split(
+            features_hour_df, labels_hour_df, test_size=0.1, random_state=666)
+        # 模型训练
+        xgb = XgbModel()
+        # 尝试加载已有模型
+        hour_model_path = os.path.join('model', f'xgb_model_hour{model_suffix}.json')
         if not retrain:
-            km.load(load_path=os.path.join('model', sample_model_name))
-        if km.get_model() is None:
-            km.fit(ratio_arr)
+            xgb.load(load_path=hour_model_path)
+        if xgb.get_model() is None:
+            xgb.fit(x_train_hour.values, y_train_hour.values)
         if save_model:
-            km.save(save_path=os.path.join('model', sample_model_name))
-        current_sample = km.sample(2)
-        print(f'{h} samples: {current_sample}')
+            xgb.save(save_path=hour_model_path)
+        # 计算训练集和测试集的mse
+        pred_hour = xgb.predict(x_test_hour.values)
+        pred_train_hour = xgb.predict(x_train_hour.values)
+        mse_train = np.sqrt(mean_squared_error(y_train_hour.values, pred_train_hour))
+        mse_test = np.sqrt(mean_squared_error(y_test_hour.values, pred_hour))
+        print('小时粒度rmse（训练集）:', mse_train)
+        print('小时粒度rmse（测试集）:', mse_test)
+
+        # 核密度估计+马尔可夫链+蒙特卡洛采样，计算冷量占比，每小时对应一个采样模型
+        hour_group = hour_df.groupby(['hour'])
+        for h, df in hour_group:
+            ratio_arr = df['ratio'].values
+            ratio_arr = ratio_arr[DataFilter.filter_by_3sigma(ratio_arr)]
+            km = KDMSample()
+            sample_model_name = f'kdm_sample_{h}{model_suffix}.model'
+            if not retrain:
+                km.load(load_path=os.path.join('model', sample_model_name))
+            if km.get_model() is None:
+                km.fit(ratio_arr)
+            if save_model:
+                km.save(save_path=os.path.join('model', sample_model_name))
+            current_sample = km.sample(2)
+            print(f'{h} samples: {current_sample}')
 
 
 def val(x_df, y_df):
@@ -127,7 +144,7 @@ def val(x_df, y_df):
     hour_data = data_obj.model_input_train(x_df, y_df, granularity='hour')
     day_df, features_day_df, labels_day_df, features_day_idx = day_data
     print('load success, continuing')
-    print('day shape', day_df.shape)
+    print('day shape', features_day_df.shape)
     # 计算结果进行推导
     xgb = XgbModel()
     # 尝试加载已有模型
@@ -138,7 +155,7 @@ def val(x_df, y_df):
     valid_day_df['pre_capacity_per_day'] = pred_day_mean
     valid_day_df.rename(columns={'date': 'day', 'capacity': 'capacity_per_day'}, inplace=True)
     hour_df, features_hour_df, labels_hour_df, features_hour_idx = hour_data
-    print('hour shape', hour_df.shape)
+    print('hour shape', features_hour_df.shape)
     xgb = XgbModel()
     hour_model_path = os.path.join('model', 'xgb_model_hour.json')
     xgb.load(load_path=hour_model_path)
@@ -160,8 +177,8 @@ def val(x_df, y_df):
 
     predict_df['ratio_sample'] = predict_df['date'].apply(lambda d: sample_model_dict[d.hour])
     predict_df['pre_ratio_opt'] = predict_df['pre_ratio'] * 2 / 3 + predict_df['ratio_sample'] / 3
+    # predict_df['pre_ratio_opt'] = predict_df['pre_ratio']
     predict_df['pre_capacity'] = predict_df['pre_capacity_per_day'] * predict_df['pre_ratio_opt']
-    print(predict_df.head())
     true_y = predict_df['capacity'].values
     pre_y = predict_df['pre_capacity'].values
     plt.figure(figsize=(15, 10))
@@ -204,21 +221,41 @@ def predict(x_df):
 
     ratio_sample = np.array([sample_model_dict[d.hour] for d in x_df['date']])
     pre_ratio_opt = pred_ratio * 2 / 3 + ratio_sample / 3
-    x_df['pre_capacity'] = pred_day_mean * pre_ratio_opt
-    x_df.index = np.arange(x_df.shape[0])
-    return x_df[['date', 'pre_capacity']].copy()
+    res = x_df[['date']].copy()
+    res['pre_capacity'] = pred_day_mean * pre_ratio_opt
+    res.index = np.arange(res.shape[0])
+    return res
 
 
-def main():
-    x, y = get_data()
+def main(data_type='heat'):
+    x, y = get_data(data_type=data_type)
     data_obj = DataPrepare()
-    day_data = data_obj.model_input_train(x, y, granularity='day')
-    hour_data = data_obj.model_input_train(x, y, granularity='hour')
-    train(day_data, hour_data)
-    val(x, y)
+    if data_type == 'heat':
+        day_data = data_obj.model_input_train(x, y, granularity='day')
+        hour_data = data_obj.model_input_train(x, y, granularity='hour')
+        train(day_data, hour_data)
+        val(x, y)
+        forecast_per_hour()
+    else:
+        day_data = data_obj.model_input_train_v2(x, y)
+        train(day_data, model_suffix='v2')
+        day_df, features_day_df, labels_day_df, features_day_idx = day_data
+        # 预测结果写入mysql
+        xgb = XgbModel()
+        # 尝试加载已有模型
+        day_model_path = os.path.join('model', 'xgb_model_day_v2.json')
+        xgb.load(load_path=day_model_path)
+        pre_history = xgb.predict(features_day_df.values)
+        pre_res = day_df.loc[features_day_idx][['date']].copy()
+        pre_res['predict'] = pre_history
+        pre_res = pre_res[(pre_res['date'] >= '2022-06-15') & (pre_res['date'] <= '2022-09-15')]
+        res_to_mysql(pre_res, table_name='Tb_Ammeter_Predict', data_type='cooling_tower', interval='1d')
+        pre_future = forecast_per_day()
+        pre_future = pre_future[pre_future['date'] <= '2022-09-15']
+        res_to_mysql(pre_future, table_name='Tb_Ammeter_Predict', data_type='cooling_tower', interval='1d')
 
 
-def forecast_feature():
+def forecast_per_hour():
     request_params = {'location': '116.298,39.9593', 'key': 'f72973eab37748f5a19b4989ee1466b4'}
     weather_base_url = 'https://api.qweather.com/v7/grid-weather/24h'
     res = requests.get(url=weather_base_url, params=request_params)
@@ -231,12 +268,55 @@ def forecast_feature():
     # 室内温度设置为期望温度
     feature_df['temperature_in'] = 25
     pre = predict(feature_df)
+    # return pre
     pre['hour'] = pre['date'].dt.hour
     pre['hour'] = pre['hour'].astype(str)
     pre.plot(x='hour', y='pre_capacity', figsize=(15, 10))
-    plt.legend()
     plt.show()
 
 
+def forecast_per_day():
+    request_params = {'location': '116.298,39.9593', 'key': 'f72973eab37748f5a19b4989ee1466b4'}
+    weather_base_url = 'https://api.qweather.com/v7/weather/30d'
+    res = requests.get(url=weather_base_url, params=request_params)
+    res_dict = json.loads(res.text)
+    weather_df = pd.DataFrame(res_dict['daily'])
+    feature_df = weather_df[['fxDate', 'tempMin', 'tempMax', 'humidity']].rename(
+        columns={'fxDate': 'date', 'tempMin': 't_min', 'tempMax': 't_max', 'humidity': 'h_mean'})
+    # 时间需要加8个小时
+    feature_df['date'] = pd.to_datetime(feature_df['date']) + pd.Timedelta(hours=8)
+    feature_df[['t_min', 't_max', 'h_mean']] = feature_df[['t_min', 't_max', 'h_mean']].astype(float)
+    # 适当放大最低温度(靠近工作时段)
+    feature_df['t_min'] *= 1.09
+    # 室内温度设置为期望温度
+    feature_df['sn_t_mean'] = 25
+    feature = feature_df[['t_max', 't_min', 'h_mean', 'sn_t_mean']].values
+    # 计算结果进行推导
+    xgb = XgbModel()
+    # 尝试加载已有模型
+    day_model_path = os.path.join('model', 'xgb_model_day_v2.json')
+    xgb.load(load_path=day_model_path)
+    pre = xgb.predict(feature)
+    pre_df = feature_df[['date']].copy()
+    pre_df['predict'] = pre
+    return pre_df
+    # pre_df['day'] = pre_df['date'].dt.strftime('%Y-%m-%d')
+    # pre_df.plot(x='day', y='predict', figsize=(15, 10))
+    # plt.show()
+
+
+def res_to_mysql(df, table_name='', project_id=0, data_type='', interval='1H'):
+    df['project_id'] = project_id
+    if data_type != '':
+        df['data_type'] = data_type
+    df['current_date'] = pd.Timestamp(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    df.rename(columns={'date': 'pre_date'}, inplace=True)
+    df['interval'] = interval
+    columns = ['project_id', 'data_type', 'current_date', 'pre_date', 'predict', 'interval']
+    df = df[columns]
+    DataLoader.pandas_to_sql(df, host='8.141.169.219', user='root', password='Zrhdb#2019',
+                             port=3307, database='WeiCloudAirDB.V4', table_name=table_name)
+
+
 if __name__ == '__main__':
-    forecast_feature()
+    main(data_type='electricity')

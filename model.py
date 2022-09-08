@@ -80,8 +80,6 @@ class XgbModel:
         base_divisor = np.percentile(y, 0.75)
         use_y = y / base_divisor
         obj = HPOpt(x, use_y)
-        print(y)
-        print(use_y)
         algo = partial(tpe.suggest, n_startup_jobs=125, n_EI_candidates=50)
         xgb_opt = obj.run(fn_name='xgb_reg', space=self.xgb_para, trials=Trials(), algo=algo, max_evals=1000,
                           early_stopping=100)
@@ -94,7 +92,7 @@ class XgbModel:
         return self
 
     def predict(self, x):
-        return self.best_estimator_.predict(x) * self.best_estimator_.base_divisor
+        return np.abs(self.best_estimator_.predict(x) * self.best_estimator_.base_divisor)
 
     def save(self, save_path=None):
         if save_path is None:
