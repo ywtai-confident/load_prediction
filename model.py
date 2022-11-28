@@ -46,8 +46,8 @@ class HPOpt(object):
         reg.fit(self.x_train, self.y_train, **para['fit_params'])
         cv_loss = -cross_val_score(estimator=reg, X=self.x_train, y=self.y_train, cv=10,
                                    scoring='neg_root_mean_squared_error')
-        #         pred = reg.predict(self.x_test)
-        #         loss = np.sqrt(mean_squared_error(self.y_test, pred)) + cv_loss.mean() + 2 * np.abs(np.mean(self.y_test) - np.mean(pred))
+        # pred = reg.predict(self.x_test)
+        # loss = np.sqrt(mean_squared_error(self.y_test, pred)) + cv_loss.mean() + 2 * np.abs(np.mean(self.y_test) - np.mean(pred))
         pred = reg.predict(self.x_train)
         loss = cv_loss.mean() + np.abs(np.mean(self.y_train) - np.mean(pred))
         return {'loss': loss, 'status': STATUS_OK}
@@ -56,7 +56,6 @@ class HPOpt(object):
 class XgbModel:
 
     def __init__(self):
-        # 为了便于xgboost进行超参数搜索，对label进行伪归一化
         xgb_reg_params = {
             'learning_rate': hp.quniform('learning_rate', 0.01, 1, 0.01),
             'max_depth': hp.choice('max_depth', np.arange(3, 13, 1)),
@@ -77,6 +76,7 @@ class XgbModel:
         self.best_estimator_ = None
 
     def fit(self, x, y):
+        # 为了便于xgboost进行超参数搜索，对label进行伪归一化
         base_divisor = np.percentile(y, 0.75)
         use_y = y / base_divisor
         obj = HPOpt(x, use_y)

@@ -1,0 +1,30 @@
+con:
+  host: '8.141.169.219'
+  user: 'root'
+  password: 'Zrhdb#2019'
+  port: 3307
+  database: 'WeiCloudAirDB.V4'
+
+table:
+  predict: 'Tb_Ammeter_Predict_test'
+
+sql:
+  heater_meter: "SELECT* FROM Tb_HeatMeter_History WHERE parm_002 IN (469951342248480,469951350586400)
+                 and parm_003 BETWEEN '2021-01-01' and '2022-09-30'"
+  humiture_outdoor: "SELECT* FROM Tb_TempHumSensor_History WHERE parm_002=470003957458464 AND parm_003>='2021-01-01'
+                     AND parm_003<='2022-09-30'"
+  humiture_indoor: "SELECT* FROM Tb_NewWindController_History WHERE `parm_002` IN
+                    (470618646962208,470618572902944,470618744251937,470618803815968,
+                    470618817306144,470618829469216,470618850919456,470618507798560,
+                    470618631240224,470618617578528,470618603848736,470618590059040,
+                    470618560459808,470618546182688,470618530813472) AND `parm_003`<='2022-09-30' AND `parm_003`>='2021-01-01'"
+  cooling_tower: "SELECT* FROM Tb_Ammeter_History WHERE `parm_002`=478498583236640
+                  AND `parm_003`<='2022-09-30' AND `parm_003`>='2021-01-01'"
+  cooling_pump: "SELECT* FROM Tb_Ammeter_History WHERE `parm_002` IN (4699513061064000,469951321369120)
+                 AND `parm_003`<='2022-09-30' AND `parm_003`>='2021-01-01'"
+  predict: "SELECT* FROM Tb_Ammeter_Predict_test"
+
+model:
+  max_model_counts: 10
+  evma_beta: 0.1
+  temperature_in: 25

@@ -10,28 +10,48 @@
 from chinese_calendar import is_workday
 from collections import defaultdict
 # from sklearn.neighbors import LocalOutlierFactor as LOF
-from enum import Enum
 import os
+import yaml
 from sqlalchemy import create_engine
 import pymysql
 import numpy as np
 import pandas as pd
 import re
+import hashlib
 
 
-class Sql(Enum):
-    HEATER_METER = "SELECT* FROM Tb_HeatMeter_History WHERE parm_002 IN (469951342248480,469951350586400) " \
-                   "and parm_003 BETWEEN '2021-01-01' and '2022-09-15'"
-    HUMITURE_OUTDOOR = "SELECT* FROM Tb_TempHumSensor_History WHERE parm_002=470003957458464 " \
-                       "AND parm_003>='2021-01-01'AND parm_003<='2022-09-15'"
-    HUMITURE_INDOOR = "SELECT* FROM Tb_NewWindController_History WHERE `parm_002` IN " \
-                      "(470618646962208,470618572902944,470618744251937,470618803815968," \
-                      "470618817306144,470618829469216,470618850919456,470618507798560," \
-                      "470618631240224,470618617578528,470618603848736,470618590059040," \
-                      "470618560459808,470618546182688,470618530813472) " \
-                      "AND `parm_003`<='2022-09-15' AND `parm_003`>='2021-01-01'"
-    COOLING_TOWER = "SELECT* FROM Tb_Ammeter_History WHERE `parm_002`=478498583236640 " \
-                    "AND `parm_003`<='2022-09-15' AND `parm_003`>='2021-01-01'"
+# class lazy_property:
+#     """
+#     描述器
+#     """
+#     def __init__(self, func):
+#         self.func = func
+#
+#     def __get__(self, instance, cls):
+#         if instance is None:
+#             return self
+#         else:
+#             value = self.func(instance)
+#             setattr(instance, self.func.__name__, value)
+#             return value
+class Singleton(object):
+    def __new__(cls, *args, **kwargs):
+        if not hasattr(cls, '_instance'):
+            cls._instance = super(Singleton, cls).__new__(cls, *args, **kwargs)
+        return cls._instance
+
+
+class ArgFactory(Singleton):
+
+    def __init__(self, arg_path=None):
+        if arg_path is None:
+            arg_path = 'arg.yml'
+        with open(arg_path, 'r') as f:
+            arg_dict = yaml.load(f.read(), Loader=yaml.FullLoader)
+        self.con = arg_dict['con']
+        self.table = arg_dict['table']
+        self.sql = arg_dict['sql']
+        self.model = arg_dict['model']
 
 
 class DataFilter:
@@ -56,7 +76,10 @@ class DataLoader:
         if self.loader == 'mysql':
             sql_split = re.split(r' +', sql)
             table_name = sql_split[sql_split.index('FROM') + 1]
-            cache_file_name = f'{host}_{user}_{port}_{database}_{table_name}.csv'
+            # sql使用md5编码(在此之前去掉多余的空格)
+            sql = re.sub(r' +', ' ', sql)
+            sql_encode = hashlib.md5(sql.encode()).hexdigest()
+            cache_file_name = f'{host}_{user}_{port}_{database}_{table_name}_{sql_encode}.csv'
             cache_path = os.path.join(self.cache_folder, cache_file_name)
             if cache and os.path.exists(cache_path):
                 res_df = pd.read_csv(cache_path)
@@ -83,7 +106,7 @@ class DataLoader:
 
     @staticmethod
     def pandas_to_sql(df, table_name='predict', host='127.0.0.1',
-                      user='root', password='', port=3306, database=''):
+                      user='root', password='', port=3306, database='', if_exists='append'):
 
         db_string = f'mysql+pymysql://{user}:{password}@{host}:{port}/{database}'
         engine = create_engine(db_string)
@@ -94,22 +117,27 @@ class DataLoader:
         tables = cursor.fetchall()
         db.close()
         table_list = [t[0] for t in tables]
+        add_keys = False
         if table_name not in table_list:
             df.to_sql(table_name, engine, index=False)
+            add_keys = True
+        else:
+            df.to_sql(table_name, engine, index=False, if_exists=if_exists)
+            if if_exists == 'replace':
+                add_keys = True
+        if add_keys:
             # 添加自增主键
             with engine.connect() as con:
                 con.execute(f"ALTER TABLE`WeiCloudAirDB.V4`.`{table_name}` "
                             f"ADD COLUMN `id` INT NOT NULL AUTO_INCREMENT FIRST, "
                             f"ADD PRIMARY KEY (`id`);")
-        else:
-            df.to_sql(table_name, engine, index=False, if_exists='append')
 
 
 class DataPrepare:
 
     @staticmethod
-    def build_label(meter_df, data_type='heat'):
-        key = 'Hm_Parm_002' if data_type == 'heat' else 'Am_Parm_029'
+    def build_label(meter_df, data_type='cold'):
+        key = 'Hm_Parm_002' if data_type in ['heat', 'cold'] else 'Am_Parm_029'
         use_df = meter_df[['parm_002', 'parm_003', key]]
         use_df = use_df[~pd.isnull(use_df[key])]
         use_df.rename(columns={'parm_002': 'id', 'parm_003': 'date', key: 'capacity'}, inplace=True)
@@ -241,7 +269,7 @@ class DataPrepare:
                 temperature = ws_df['temperature'].values
                 humidity = ws_df['humidity'].values
                 temperature_in = in_df['temperature_in'].values
-                # 提取原值、一阶导和二阶导的均值和标准差
+                # 提取均值和标准差
                 feature_sub = [temperature.mean(), temperature.std(),
                                humidity.mean(), humidity.std(),
                                temperature_in.mean()]
@@ -297,7 +325,7 @@ class DataPrepare:
 
         return merge_df, features_df, labels_df, np.array(feature_idx)
 
-    def model_input_train_v2(self, x_df, y_df):
+    def model_input_train_c(self, x_df, y_df):
         """
         能耗预测构建特征的方式(需要预测未来一个月,无法构建导数等复杂特征)
         :param x_df:
@@ -396,14 +424,18 @@ class DataPrepare:
 
 if __name__ == '__main__':
     dl = DataLoader('mysql')
-    heat_meter = dl.load(host='8.141.169.219', user='root', password='Zrhdb#2019',
-                         port=3307, database='WeiCloudAirDB.V4', sql=Sql.HEATER_METER.value)
-    humiture_outdoor = dl.load(host='8.141.169.219', user='root', password='Zrhdb#2019',
-                               port=3307, database='WeiCloudAirDB.V4', sql=Sql.HUMITURE_OUTDOOR.value)
-    humiture_indoor = dl.load(host='8.141.169.219', user='root', password='Zrhdb#2019',
-                              port=3307, database='WeiCloudAirDB.V4', sql=Sql.HUMITURE_INDOOR.value)
-    elec_cooling_tower = dl.load(host='8.141.169.219', user='root', password='Zrhdb#2019',
-                                 port=3307, database='WeiCloudAirDB.V4', sql=Sql.COOLING_TOWER.value)
+    parser = ArgFactory()
+    heat_meter = dl.load(host=parser.con['host'], user=parser.con['user'], password=parser.con['password'],
+                         port=parser.con['port'], database=parser.con['database'], sql=parser.sql['heater_meter'])
+    humiture_indoor = dl.load(host=parser.con['host'], user=parser.con['user'], password=parser.con['password'],
+                              port=parser.con['port'], database=parser.con['database'],
+                              sql=parser.sql['humiture_indoor'])
+    humiture_outdoor = dl.load(host=parser.con['host'], user=parser.con['user'], password=parser.con['password'],
+                               port=parser.con['port'], database=parser.con['database'],
+                               sql=parser.sql['humiture_outdoor'])
+    elec_cooling_tower = dl.load(host=parser.con['host'], user=parser.con['user'], password=parser.con['password'],
+                                 port=parser.con['port'], database=parser.con['database'],
+                                 sql=parser.sql['cooling_tower'])
     data_obj = DataPrepare()
     y = data_obj.build_label(elec_cooling_tower, data_type='electricity')
     x = data_obj.build_feature(humiture_outdoor, humiture_indoor)
